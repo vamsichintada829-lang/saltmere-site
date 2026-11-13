@@ -9,7 +9,7 @@ rm -rf build && mkdir -p build/assets build/gen build/classes build/dex
 python3 make_offline_html.py ../game/index.html build/assets/index.html
 "$BT/aapt2" compile --dir res -o build/res.zip
 "$BT/aapt2" link -o build/base.apk -I "$JAR" --manifest AndroidManifest.xml -A build/assets --java build/gen \
-  --min-sdk-version 24 --target-sdk-version 34 --version-code 2 --version-name 2.0 build/res.zip
+  --min-sdk-version 24 --target-sdk-version 34 --version-code 3 --version-name 2.1 build/res.zip
 javac -nowarn -Xlint:none -source 8 -target 8 -bootclasspath "$JAR" -classpath "$JAR" -d build/classes \
   build/gen/com/wheelsmart/streetrush/R.java src/com/wheelsmart/streetrush/MainActivity.java src/com/wheelsmart/streetrush/Bridge.java
 "$BT/d8" --release --lib "$JAR" --min-api 24 --output build/dex $(find build/classes -name '*.class')

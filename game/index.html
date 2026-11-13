@@ -701,11 +701,70 @@ function buildVillage() {
   addOBB(tx, tz, 5, 5, 0, 11); addCirc(tx, tz + 7.5, .2);
   addGeo(L.ring, new THREE.RingGeometry(7.6, 8, 64).rotateX(-Math.PI / 2), cx, .035, cz);
   boundaryLine(L, BOUND - .2, .01);
-  flushLists(L);
   BALL_HOME = { x: cx, z: cz };
-  const mid = (a, b) => ({ x: (nodes[a].x + nodes[b].x) / 2, z: (nodes[a].z + nodes[b].z) / 2 });
-  const s = mid(id(2, G), id(3, G)), n = mid(id(2, 0), id(3, 0)), w = mid(id(0, 2), id(0, 3)), e = mid(id(G, 2), id(G, 3));
-  SPAWNS = [{ gx: s.x, gz: s.z, fx: 0, fz: -1 }, { gx: n.x, gz: n.z, fx: 0, fz: 1 }, { gx: w.x, gz: w.z, fx: 1, fz: 0 }, { gx: e.x, gz: e.z, fx: -1, fz: 0 }];
+  { const mid = (a, b) => ({ x: (nodes[a].x + nodes[b].x) / 2, z: (nodes[a].z + nodes[b].z) / 2 });
+    const s = mid(id(2, G), id(3, G)), n = mid(id(2, 0), id(3, 0)), w = mid(id(0, 2), id(0, 3)), e = mid(id(G, 2), id(G, 3));
+    SPAWNS = [{ gx: s.x, gz: s.z, fx: 0, fz: -1 }, { gx: n.x, gz: n.z, fx: 0, fz: 1 }, { gx: w.x, gz: w.z, fx: 1, fz: 0 }, { gx: e.x, gz: e.z, fx: -1, fz: 0 }]; }
+  // village houses: about three along each street, kept clear of bases, spawns, the temple ground and other roads
+  const HOUSE_COLS = [0xefe8da, 0xf1d58a, 0xe8b0a6, 0x9cc7d8, 0xb9d7a0, 0xe9a46b, 0xf4f1ea, 0xd9c7e6];
+  const part = (list, geo, cx, cz, ang, lx, ly, lz, col) => addGeo(list, geo, cx + lx * Math.cos(ang) + lz * Math.sin(ang), ly, cz - lx * Math.sin(ang) + lz * Math.cos(ang), ang, col);
+  function house(cx, cz, ang, w, d) {
+    const t = r(), wall = HOUSE_COLS[Math.floor(r() * HOUSE_COLS.length)], dark = _wc.set(wall).multiplyScalar(.72).getHex();
+    if (t < .18) { // round hut with thatch
+      const rad = Math.min(w, d) / 2 * .8, mud = r() < .5 ? 0xc9a77c : 0xefe8da;
+      addGeo(L.plain, new THREE.CylinderGeometry(rad, rad + .1, 2.4, 16), cx, 1.2, cz, 0, mud);
+      addGeo(L.plain, new THREE.CylinderGeometry(rad + .25, rad + .3, .35, 16), cx, .17, cz, 0, 0x8d6e4e);
+      const cone = new THREE.ConeGeometry(rad + .8, 2.4, 16, 1), uv = cone.attributes.uv; for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * 6, uv.getY(i) * 2);
+      addGeo(L.thatch, cone, cx, 2.4 + 1.2, cz, 0, 0xffffff);
+      part(L.plain, new THREE.BoxGeometry(.9, 1.8, .2), cx, cz, ang, 0, .9, rad, 0x4a3524);
+      addCirc(cx, cz, rad + .3); return;
+    }
+    const floors = t > .72 ? 2 : 1, tiled = t < .5, H = 3.1 * floors;
+    addGeo(L.plain, new THREE.BoxGeometry(w + .3, .45, d + .3), cx, .225, cz, ang, 0x9a948a);
+    part(L.plain, new THREE.BoxGeometry(w, H, d), cx, cz, ang, 0, .45 + H / 2, 0, wall);
+    part(L.plain, new THREE.BoxGeometry(w + .04, .5, d + .04), cx, cz, ang, 0, .7, 0, dark);
+    if (tiled) {
+      const o = .55, rh = 1.7, sh = new THREE.Shape(); sh.moveTo(-d / 2 - o, 0); sh.lineTo(d / 2 + o, 0); sh.lineTo(0, rh); sh.closePath();
+      const roof = new THREE.ExtrudeGeometry(sh, { depth: w + 2 * o, bevelEnabled: false }); roof.rotateY(Math.PI / 2); roof.translate(-(w + 2 * o) / 2, 0, 0);
+      const uv = roof.attributes.uv; for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * .5, uv.getY(i) * .5);
+      part(L.tile, roof, cx, cz, ang, 0, .45 + H, 0, [0xffffff, 0xe8d0c0, 0xd0b0a0][Math.floor(r() * 3)]);
+    } else {
+      part(L.plain, new THREE.BoxGeometry(w + .5, .18, d + .5), cx, cz, ang, 0, .45 + H + .09, 0, 0xc9c4ba);
+      for (const [px, pz, sx, sz] of [[0, d / 2 - .09, w, .18], [0, -d / 2 + .09, w, .18], [w / 2 - .09, 0, .18, d], [-w / 2 + .09, 0, .18, d]]) part(L.plain, new THREE.BoxGeometry(sx, .8, sz), cx, cz, ang, px, .45 + H + .58, pz, wall);
+      if (r() < .5) part(L.plain, new THREE.CylinderGeometry(.6, .6, 1.2, 12), cx, cz, ang, w * .25, .45 + H + .78, -d * .2, 0x1d1f21);
+    }
+    for (let f = 0; f < floors; f++) {
+      const y = .45 + f * 3.1;
+      if (f === 0) { part(L.plain, new THREE.BoxGeometry(1.1, 2.1, .1), cx, cz, ang, -w * .22, y + 1.05, d / 2 + .05, 0x5a3a22); part(L.plain, new THREE.BoxGeometry(1.7, .22, .7), cx, cz, ang, -w * .22, .11, d / 2 + .35, 0x8e897f); }
+      for (const wx of f === 0 ? [w * .22] : [-w * .22, w * .22]) {
+        part(L.plain, new THREE.BoxGeometry(1.1, 1.15, .1), cx, cz, ang, wx, y + 1.55, d / 2 + .05, 0x2e4d55);
+        part(L.plain, new THREE.BoxGeometry(1.6, .08, .55), cx, cz, ang, wx, y + 2.25, d / 2 + .27, wall);
+      }
+      part(L.plain, new THREE.BoxGeometry(1.6, .08, .55), cx, cz, ang, -w * .22, y + 2.35, d / 2 + .27, wall);
+    }
+    addOBB(cx, cz, w / 2 + .2, d / 2 + .2, ang, H + 1);
+  }
+  const free = [{ x: cx, z: cz, r: 36 }];
+  for (const sp of SPAWNS) { free.push({ x: sp.gx, z: sp.gz, r: 11 }, { x: sp.gx + sp.fx * 14, z: sp.gz + sp.fz * 14, r: 9 }); }
+  const clear = (x, z, rad) => free.every(f => Math.hypot(f.x - x, f.z - z) > f.r + rad);
+  const segDist = (x, z, e) => { const A = nodes[e.a], t = clamp((x - A.x) * e.dx + (z - A.z) * e.dz, 0, e.len); return Math.hypot(A.x + e.dx * t - x, A.z + e.dz * t - z); };
+  const offRoads = (x, z, rad) => edges.every(e => segDist(x, z, e) > W / 2 + rad) && nodes.every(n => Math.hypot(n.x - x, n.z - z) > W + rad);
+  for (const e of edges) {
+    const A = nodes[e.a], B = nodes[e.b], nx = -e.dz, nz = e.dx;
+    let placed = 0;
+    for (const f of [.22, .5, .78, .36, .64]) {
+      if (placed >= 3) break;
+      for (const side of r() < .5 ? [1, -1] : [-1, 1]) {
+        const w = 7 + r() * 3.5, d = 6 + r() * 2.5, off = W / 2 + 2 + d / 2, rad = Math.hypot(w, d) / 2;
+        const hx = A.x + (B.x - A.x) * f + nx * side * off, hz = A.z + (B.z - A.z) * f + nz * side * off;
+        if (Math.abs(hx) > BOUND - rad - 3 || Math.abs(hz) > BOUND - rad - 3) continue;
+        if (!clear(hx, hz, rad + 1.5) || !offRoads(hx, hz, rad - d / 2 + .5)) continue;
+        house(hx, hz, Math.atan2(-side * nx, -side * nz), w, d);
+        free.push({ x: hx, z: hz, r: rad }); placed++; break;
+      }
+    }
+  }
+  flushLists(L);
 }
 
 // ------------------------------------------------------------------ maps
@@ -1694,10 +1753,7 @@ function matchStep(dt) {
     else { tx = FLAG_HOME.x; tz = FLAG_HOME.z; txt = 'GRAB THE <b>FLAG</b>'; }
   }
   setHTML(hud.obj, txt);
-  if (tx !== undefined && Math.hypot(tx - P.x, tz - P.z) > 9) {
-    arrow.visible = true; arrow.material.color.setHex(col);
-    arrow.position.set(P.x, P.y + 3 + Math.sin(t * 4) * .12, P.z); arrow.rotation.y = Math.atan2(tx - P.x, tz - P.z);
-  } else arrow.visible = false;
+  arrow.visible = false;
   // network
   if (MT.online) {
     MT.sendT -= dt;
@@ -1943,7 +1999,7 @@ applyMap('city'); { const s = spawnOf(0); Object.assign(P, { x: s.x, z: s.z, yaw
 flag.visible = flagStand.visible = flagBeam.visible = true; flagStand.position.set(BALL_HOME.x, 0, BALL_HOME.z); placeFlag();
 try { renderer.compile(scene, camera); renderer.render(scene, camera); } catch (_) {}
 flag.visible = flagStand.visible = flagBeam.visible = false;
-if (location.hash === '#debug') window.__br = { P, M: MT, NET, LOBBY, remotes, world, startSolo, hostClaim, get FLAG_HOME() { return FLAG_HOME; }, get bases() { return bases; }, setName: n => { $('pname').value = n; } };
+if (location.hash === '#debug') window.__br = { P, M: MT, get obsN() { return obs.length; }, get edgesN() { return edges.length; }, NET, LOBBY, remotes, world, startSolo, hostClaim, get FLAG_HOME() { return FLAG_HOME; }, get bases() { return bases; }, setName: n => { $('pname').value = n; } };
 requestAnimationFrame(frame);
 $('bSolo').disabled = $('bTeam').disabled = false;
 function showMenu() { showView('vHome'); $('intro').classList.add('out'); setTimeout(() => { $('intro').hidden = true; }, 600); }

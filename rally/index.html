@@ -41,8 +41,10 @@ body{touch-action:none;-webkit-user-select:none;user-select:none}
 .speed b{display:block;font-size:46px;line-height:1.05;font-weight:700;font-variant-numeric:tabular-nums}
 .speed span{font-size:10px;letter-spacing:.2em;color:var(--muted)}
 .count{position:absolute;left:50%;top:38%;transform:translate(-50%,-50%);font-size:120px;font-weight:700;color:var(--fg);text-shadow:0 6px 30px rgba(0,0,0,.5)}
-.overlay{position:fixed;inset:0;display:flex;align-items:center;justify-content:flex-start;background:linear-gradient(90deg,rgba(9,14,17,.92) 0%,rgba(9,14,17,.7) 45%,rgba(9,14,17,.05) 100%);padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
-.card{max-width:440px;display:flex;flex-direction:column;gap:18px;padding-block:24px}
+.overlay{position:fixed;inset:0;display:flex;align-items:flex-start;overflow-y:auto;justify-content:flex-start;background:linear-gradient(90deg,rgba(9,14,17,.92) 0%,rgba(9,14,17,.7) 45%,rgba(9,14,17,.05) 100%);padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.card{max-width:440px;display:flex;flex-direction:column;gap:18px;padding-block:24px;margin-block:auto}
+body.touch .keys{display:none}
+@media (max-height:520px){.card{gap:10px;padding-block:14px}h1{font-size:40px}h2{font-size:30px}.card p{font-size:14px}.keys{display:none}.big{font-size:40px}.splits{max-height:90px}.btn{padding:10px 22px}}
 .eyebrow{font-family:var(--display);color:var(--accent);letter-spacing:.24em;font-size:12px;font-weight:700}
 h1{font-family:var(--display);font-size:clamp(44px,9vw,76px);line-height:.9;margin:0;letter-spacing:-.01em;text-wrap:balance}
 h2{font-family:var(--display);font-size:40px;margin:0;line-height:1}
@@ -745,6 +747,8 @@ function frame(now){requestAnimationFrame(frame);
   updateAudio();
   renderer.render(scene,camera);
 }
+window.__appPause=()=>{if(state==='race'||state==='count')setPause(true)};
+window.__appBack=()=>{if(state==='race'||state==='count'){setPause(true);return 'paused'}if(state==='pause'){setPause(false);return 'resumed'}if(state==='done'){$('result').hidden=true;$('hud').hidden=true;$('touch').hidden=true;$('mute').hidden=true;state='menu';placeCar(START-8);car.prog=START-8;$('menu').hidden=false;return 'menu'}return 'exit'};
 placeCar(START-8);car.prog=START-8;
 $('loading').remove();$('menu').hidden=false;
 requestAnimationFrame(t=>{last=t;frame(t)});

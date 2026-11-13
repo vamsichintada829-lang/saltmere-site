@@ -485,7 +485,7 @@ function makeCar(paint, hero) {
   const tailMat = new THREE.MeshStandardMaterial({ color: 0x550000, emissive: 0xff1a12, emissiveIntensity: 1.2, roughness: .3 });
   const add = (g, m, cast = true) => { const x = new THREE.Mesh(g, m); x.castShadow = cast; body.add(x); return x; };
   const G = CAR.geo, C = CAR.common;
-  add(hero ? G.paintHero : G.paintTraffic, paint); add(G.glass, C.glass); add(G.head, C.head, false); add(G.tail, tailMat, false); add(G.dark, C.trim);
+  const paintMesh = add(hero ? G.paintHero : G.paintTraffic, paint), glassMesh = add(G.glass, C.glass), headMesh = add(G.head, C.head, false); add(G.tail, tailMat, false); add(G.dark, C.trim);
   if (hero) { add(G.posts, C.trim); add(G.plate, C.plate, false); add(G.exhaust, C.chrome, false); }
   const wheels = [];
   for (const [x, z, front] of [[-.8, -1.25, 1], [.8, -1.25, 1], [-.8, 1.3, 0], [.8, 1.3, 0]]) {
@@ -497,7 +497,7 @@ function makeCar(paint, hero) {
     wheels.push({ pivot, spin, front });
   }
   const sh = new THREE.Mesh(G.shadow, hero ? C.shadow.clone() : C.shadow); sh.renderOrder = 1; root.add(sh);
-  return { root, body, wheels, tailMat, shadow: sh };
+  return { root, body, wheels, tailMat, shadow: sh, paintMesh, glassMesh, headMesh, paint, dents: 0 };
 }
 
 const heroPaint = isTouch ? new THREE.MeshStandardMaterial({ color: 0xff6a0a, metalness: .55, roughness: .26 })
@@ -515,6 +515,7 @@ for (let i = 0; i < (isTouch ? 7 : 9); i++) {
   traffic.push({ car, x: 0, y: 0, vy: 0, z: 0, v: 20, vx: 0, lane: 0, passed: false, air: false });
 }
 function spawnTraffic(t, z0) {
+  if (t.wreck) repairCar(t);
   for (let tries = 0; tries < 12; tries++) {
     const lane = LANES[Math.floor(Math.random() * 6)];
     const z = z0 - Math.random() * 260;
@@ -523,6 +524,162 @@ function spawnTraffic(t, z0) {
     }
   }
   t.z = z0 - 900;
+}
+
+
+// ------------------------------------------------------------------ crash damage (dents, broken glass, flying shards)
+const crackTex = canvasTex(256, 256, (x, w, h) => {
+  x.fillStyle = '#7d878f'; x.fillRect(0, 0, w, h); x.lineCap = 'round';
+  for (let k = 0; k < 4; k++) {
+    const cx = Math.random() * w, cy = Math.random() * h;
+    for (let i = 0; i < 14; i++) {
+      let a = Math.random() * Math.PI * 2, px = cx, py = cy;
+      x.strokeStyle = `rgba(255,255,255,${.5 + Math.random() * .4})`; x.lineWidth = 1 + Math.random() * 1.5; x.beginPath(); x.moveTo(px, py);
+      for (let j = 0; j < 6; j++) { a += (Math.random() - .5) * .7; px += Math.cos(a) * 14; py += Math.sin(a) * 14; x.lineTo(px, py); }
+      x.stroke();
+    }
+    for (let r = 10; r < 60; r += 14 + Math.random() * 10) {
+      x.strokeStyle = 'rgba(255,255,255,.35)'; x.lineWidth = 1; x.beginPath();
+      for (let i = 0; i <= 12; i++) { const a = i / 12 * Math.PI * 2, rr = r * (.8 + Math.random() * .4); i ? x.lineTo(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr) : x.moveTo(cx + rr, cy); }
+      x.stroke();
+    }
+  }
+});
+crackTex.repeat.set(.6, .6);
+const crackedGlass = new THREE.MeshStandardMaterial({ map: crackTex, color: 0x9aa4ac, metalness: .5, roughness: .35, side: THREE.DoubleSide });
+const deadLight = new THREE.MeshStandardMaterial({ color: 0x3a3d40, roughness: .4 });
+const nz3 = (x, y, z) => { const s = Math.sin(x * 12.99 + y * 78.23 + z * 37.71) * 43758.5; return s - Math.floor(s); };
+function crumple(mesh, lp, R, depth, dir) {
+  if (!mesh.userData.orig) { mesh.userData.orig = mesh.geometry; mesh.geometry = mesh.geometry.clone(); }
+  const p = mesh.geometry.attributes.position, n = mesh.geometry.attributes.normal;
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
+    const d = Math.hypot(x - lp.x, y - lp.y, z - lp.z); if (d >= R) continue;
+    const r = nz3(x, y, z), f = (1 - d / R) ** 2 * depth * (.55 + .9 * r);
+    p.setXYZ(i, x + dir.x * f, y + (dir.y - .35) * f, z + dir.z * f);
+    if (n) {
+      const k = Math.min(1, f / depth) * 1.6;
+      const a = n.getX(i) + (r - .5) * k, b = n.getY(i) + (nz3(z, x, y) - .5) * k, c = n.getZ(i) + (nz3(y, z, x) - .5) * k;
+      const l = Math.hypot(a, b, c) || 1; n.setXYZ(i, a / l, b / l, c / l);
+    }
+  }
+  p.needsUpdate = true; if (n) n.needsUpdate = true; mesh.geometry.computeBoundingSphere();
+}
+function uncrumple(mesh) { if (mesh.userData.orig) { mesh.geometry.dispose(); mesh.geometry = mesh.userData.orig; delete mesh.userData.orig; } }
+
+const SH_N = isTouch ? 150 : 260;
+const shardGeo = new THREE.BufferGeometry();
+shardGeo.setAttribute('position', new THREE.Float32BufferAttribute([-.5, 0, -.35, .5, 0, -.2, .05, 0, .5], 3));
+shardGeo.setAttribute('normal', new THREE.Float32BufferAttribute([0, 1, 0, 0, 1, 0, 0, 1, 0], 3));
+const shardMesh = new THREE.InstancedMesh(shardGeo, new THREE.MeshStandardMaterial({ metalness: .6, roughness: .12, side: THREE.DoubleSide, envMapIntensity: 1.6 }), SH_N);
+shardMesh.frustumCulled = false; shardMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+const shardData = [];
+{ const zero = new THREE.Matrix4().makeScale(0, 0, 0), white = new THREE.Color(1, 1, 1);
+  for (let i = 0; i < SH_N; i++) { shardMesh.setMatrixAt(i, zero); shardMesh.setColorAt(i, white); shardData.push({ age: 1, life: 0 }); } }
+scene.add(shardMesh);
+let shardI = 0, shardActive = 0;
+const _q = new THREE.Quaternion(), _e = new THREE.Euler(), _s3 = new THREE.Vector3(), _p3 = new THREE.Vector3(), _m4 = new THREE.Matrix4();
+function spawnShards(x, y, z, bvx, bvz, n, color, size, up) {
+  for (let i = 0; i < n; i++) {
+    const s = shardData[shardI]; shardMesh.setColorAt(shardI, color); shardI = (shardI + 1) % SH_N;
+    s.x = x + (Math.random() - .5) * 1.4; s.y = y + Math.random() * .5; s.z = z + (Math.random() - .5) * 1.4;
+    const a = Math.random() * Math.PI * 2, sp = 2 + Math.random() * 7;
+    s.vx = bvx * .6 + Math.cos(a) * sp; s.vz = bvz * .6 + Math.sin(a) * sp; s.vy = up * (.4 + Math.random());
+    s.rx = Math.random() * 6; s.ry = Math.random() * 6; s.rz = Math.random() * 6;
+    s.wx = (Math.random() - .5) * 25; s.wy = (Math.random() - .5) * 25; s.wz = (Math.random() - .5) * 25;
+    s.s = size * (.4 + Math.random()); s.age = 0; s.life = 2.5 + Math.random() * 2;
+  }
+  shardMesh.instanceColor.needsUpdate = true; shardActive = 5;
+}
+function updateShards(dt) {
+  if (shardActive <= 0) return; shardActive -= dt;
+  for (let i = 0; i < SH_N; i++) {
+    const s = shardData[i]; if (s.age >= s.life) continue;
+    s.age += dt;
+    if (s.age >= s.life) { _m4.makeScale(0, 0, 0); shardMesh.setMatrixAt(i, _m4); continue; }
+    s.vy -= GRAV * dt; s.x += s.vx * dt; s.y += s.vy * dt; s.z += s.vz * dt;
+    if (s.y < .03) {
+      s.y = .03; s.vy = s.vy < -1.5 ? -s.vy * .3 : 0;
+      s.vx *= .55; s.vz *= .55; s.wx *= .5; s.wy *= .5; s.wz *= .5; s.rx *= .7; s.rz *= .7;
+    }
+    s.rx += s.wx * dt; s.ry += s.wy * dt; s.rz += s.wz * dt;
+    const k = s.life - s.age < .6 ? (s.life - s.age) / .6 : 1;
+    _e.set(s.rx, s.ry, s.rz); _q.setFromEuler(_e); _p3.set(s.x, s.y, s.z); _s3.setScalar(s.s * k);
+    _m4.compose(_p3, _q, _s3); shardMesh.setMatrixAt(i, _m4);
+  }
+  shardMesh.instanceMatrix.needsUpdate = true;
+}
+
+const GLASS_COL = new THREE.Color(0xd8eef5), TRIM_COL = new THREE.Color(0x151617);
+const _lp = new THREE.Vector3(), _dir = new THREE.Vector3();
+function damageCar(car, wx, wy, wz, depth, crack) {
+  car.root.updateMatrixWorld(true);
+  _lp.set(wx, wy, wz); car.body.worldToLocal(_lp);
+  _lp.x = clamp(_lp.x, -.95, .95); _lp.y = clamp(_lp.y, .35, .9); _lp.z = clamp(_lp.z, -2.3, 2.3);
+  _dir.set(-_lp.x, .6 - _lp.y, -_lp.z).normalize();
+  crumple(car.paintMesh, _lp, 1.5, depth, _dir); crumple(car.glassMesh, _lp, 1.6, depth * .8, _dir);
+  if (crack) car.glassMesh.material = crackedGlass;
+}
+function crashSound(vol) {
+  if (!audio) return; const c = audio.ctx, t0 = c.currentTime;
+  const burst = (type, f, v, dur, delay = 0) => {
+    const s = c.createBufferSource(); s.buffer = audio.buf; s.playbackRate.value = .7 + Math.random() * .6;
+    const fl = c.createBiquadFilter(); fl.type = type; fl.frequency.value = f; const g = c.createGain();
+    g.gain.setValueAtTime(v, t0 + delay); g.gain.exponentialRampToValueAtTime(.001, t0 + delay + dur);
+    s.connect(fl); fl.connect(g); g.connect(audio.master); s.start(t0 + delay, Math.random()); s.stop(t0 + delay + dur + .05);
+  };
+  burst('lowpass', 500, vol * 1.2, .6); burst('bandpass', 1800, vol * .5, .35); burst('highpass', 4000, vol * .45, .5, .02);
+  for (let i = 0; i < 10; i++) {
+    const o = c.createOscillator(); o.type = 'sine'; o.frequency.value = 2500 + Math.random() * 4500;
+    const g = c.createGain(), d = .05 + Math.random() * .6;
+    g.gain.setValueAtTime(0, t0 + d); g.gain.linearRampToValueAtTime(vol * .06, t0 + d + .005); g.gain.exponentialRampToValueAtTime(.0005, t0 + d + .18);
+    o.connect(g); g.connect(audio.master); o.start(t0 + d); o.stop(t0 + d + .2);
+  }
+}
+function smash(t, nx, nz, rel) {
+  const c = t.car, cx = (t.x + P.x) / 2, cz = (t.z + P.z) / 2;
+  damageCar(c, cx, P.y + .6, cz, clamp(rel * .035, .35, .8), true);
+  c.headMesh.material = deadLight; c.tailMat.emissiveIntensity = 0; c.paint.roughness = .55;
+  t.wreck = true; t.smokeT = 7; t.air = false; c.root.rotation.order = 'YXZ';
+  const push = Math.min(rel, 45);
+  t.vx += nx * push * .55; t.v -= nz * push * .6;
+  t.vy = clamp(rel * .22, 2, 9) * (.6 + Math.random() * .5);
+  t.rx = 0; t.ry = c.root.rotation.y; t.rz = 0;
+  const side = Math.abs(nx) > Math.abs(nz), k = rel * (.08 + Math.random() * .08);
+  t.wry = (Math.random() - .5) * rel * .25;
+  t.wrx = side ? (Math.random() - .5) * 2 : nz * k;
+  t.wrz = side ? -nx * k * 1.2 : (Math.random() - .5) * 2;
+  spawnShards(cx, P.y + 1, cz, P.vx, P.vz, isTouch ? 40 : 64, GLASS_COL, .16, 5);
+  spawnShards(cx, P.y + .6, cz, P.vx, P.vz, 14, c.paint.color, .24, 4);
+  spawnShards(cx, P.y + .4, cz, P.vx, P.vz, 6, TRIM_COL, .34, 3);
+  for (let i = 0; i < 10; i++) emitSmoke(cx, P.y + .8, cz, P.vx * .3, P.vz * .3, 1);
+  if (hero.dents < 6) { hero.dents++; damageCar(hero, cx, P.y + .6, cz, clamp(rel * .018, .12, .35), rel > 24); }
+  game.slow = .9; game.shake = 1; game.drift = 0; hud.flash.style.opacity = .35; crashSound(clamp(rel / 25, .4, 1));
+  const pts = Math.round(300 + rel * 10); game.score += pts; popup('SMASHED!', `+${pts}`); t.passed = true;
+}
+function repairCar(t) {
+  const c = t.car; uncrumple(c.paintMesh); uncrumple(c.glassMesh);
+  c.glassMesh.material = CAR.common.glass; c.headMesh.material = CAR.common.head; c.tailMat.emissiveIntensity = 1.2; c.paint.roughness = .35;
+  c.root.rotation.order = 'XYZ'; c.root.rotation.set(0, 0, 0); c.shadow.visible = true; t.wreck = false;
+}
+function updateWreck(t, dt) {
+  t.vy -= GRAV * dt; t.x += t.vx * dt; t.z -= t.v * dt; t.y += t.vy * dt;
+  t.rx += t.wrx * dt; t.ry += t.wry * dt; t.rz += t.wrz * dt;
+  const up = Math.cos(t.rx) * Math.cos(t.rz);
+  const minY = up >= 0 ? (1 - up) * .9 : -up * 1.3 + (1 + up) * .9;
+  if (t.y <= minY) {
+    t.y = minY;
+    if (t.vy < -3) { t.vy = -t.vy * .28; t.wrx *= .6; t.wrz *= .6; if (Math.abs(t.z - P.z) < 40) thump(.3); } else t.vy = 0;
+    const f = Math.exp(-2.2 * dt); t.v *= f; t.vx *= f; t.wry *= Math.exp(-3 * dt);
+    if (t.vy === 0) {
+      t.wrx *= Math.exp(-4 * dt); t.wrz *= Math.exp(-4 * dt);
+      if (Math.abs(t.wrx) < 1.5) t.rx = lerp(t.rx, Math.round(t.rx / Math.PI) * Math.PI, Math.min(1, dt * 3));
+      if (Math.abs(t.wrz) < 1.5) t.rz = lerp(t.rz, Math.round(t.rz / Math.PI) * Math.PI, Math.min(1, dt * 3));
+    }
+  }
+  if (Math.abs(t.x) > 12.3) { t.x = Math.sign(t.x) * 12.3; t.vx = -t.vx * .3; }
+  if (t.smokeT > 0) { t.smokeT -= dt; if (Math.random() < (quality ? .25 : .1)) emitSmoke(t.x, t.y + 1, t.z, 0, 0, .8); }
+  return up;
 }
 
 // ------------------------------------------------------------------ effects
@@ -653,7 +810,7 @@ function popup(t, sub) { hud.msg.innerHTML = t + (sub ? `<small>${sub}</small>` 
 // ------------------------------------------------------------------ player physics
 const MAXV = 80, GRAV = 24;
 const P = { x: 2, y: 0, z: -30, yaw: 0, vx: 0, vz: 0, vy: 0, steer: 0, air: false, airT: 0, slope: 0, pitch: 0, roll: 0, susp: 0, suspV: 0, wheel: 0, yawRate: 0 };
-const game = { score: 0, dist: 0, drift: 0, driftT: 0, shake: 0, startZ: -30, combo: 1 };
+const game = { score: 0, dist: 0, drift: 0, driftT: 0, shake: 0, startZ: -30, combo: 1, slow: 0 };
 const gnd = { h: 0, s: 0 }, gnd2 = { h: 0, s: 0 };
 const GEARS = [0, 15, 28, 41, 54, 67, 80];
 let rpm = 0, gear = 1;
@@ -746,14 +903,20 @@ function updateTraffic(dt) {
   const fx = -Math.sin(P.yaw), fz = -Math.cos(P.yaw), rx = Math.cos(P.yaw), rz = -Math.sin(P.yaw);
   for (const t of traffic) {
     // slow behind other traffic
+    let up = 1;
+    if (t.wreck) up = updateWreck(t, dt);
+    else {
     let target = t.base;
     for (const o of traffic) if (o !== t && Math.abs(o.x - t.x) < 2.5 && o.z < t.z && t.z - o.z < 26) target = Math.min(target, o.v - 1);
     if (Math.abs(P.x - t.x) < 2.4 && P.z < t.z && t.z - P.z < 22) target = Math.min(target, Math.max(0, -P.vz) - 1);
+    // blocked (e.g. by a wreck): move to a free neighbouring lane
+    if (target < t.base * .4 && Math.abs(t.x - t.lane) < .5) for (const nl of [t.lane - 4, t.lane + 4]) if (LANES.includes(nl) && !traffic.some(o => o !== t && Math.abs(o.x - nl) < 2.6 && Math.abs(o.z - t.z) < 25)) { t.lane = nl; break; }
     t.v = lerp(t.v, Math.max(target, 0), Math.min(1, dt * 1.5));
     t.z -= t.v * dt; t.x += t.vx * dt + (t.lane - t.x) * Math.min(1, dt * 1.2); t.vx *= Math.exp(-3 * dt);
     groundAt(t.x, t.z, gnd2);
     if (t.air) { t.vy -= GRAV * dt; t.y += t.vy * dt; if (t.y <= gnd2.h) { t.y = gnd2.h; t.vy = 0; t.air = false; } }
     else if (gnd2.h < t.y - .08) { t.air = true; t.vy = t.slope * t.v * .9; } else { t.y = gnd2.h; t.slope = gnd2.s; }
+    }
     if (t.z > P.z + 90 || t.z < P.z - 900) spawnTraffic(t, P.z - 420);
     // collision with player
     const dx = t.x - P.x, dz = t.z - P.z;
@@ -763,20 +926,23 @@ function updateTraffic(dt) {
       let nx, nz, pen;
       if (penX < penF) { nx = rx * Math.sign(lx); nz = rz * Math.sign(lx); pen = penX; } else { nx = fx * Math.sign(lf); nz = fz * Math.sign(lf); pen = penF; }
       P.x -= nx * pen * .6; P.z -= nz * pen * .6; t.x += nx * pen * .4; t.z += nz * pen * .4;
-      const rel = (P.vx - 0) * nx + (P.vz + t.v) * nz;
-      if (rel > 0) {
+      const rel = (P.vx - t.vx) * nx + (P.vz + t.v) * nz;
+      if (rel > 9 && !t.wreck) { smash(t, nx, nz, rel); P.vx -= nx * rel * .55; P.vz -= nz * rel * .55; }
+      else if (rel > 0) {
         P.vx -= nx * rel * 1.1; P.vz -= nz * rel * 1.1;
         t.vx += nx * rel * .5; t.v = Math.max(0, t.v - nz * rel * .5);
         if (rel > 3) { game.shake = Math.max(game.shake, clamp(rel / 20, .2, .8)); thump(clamp(rel / 15, .3, 1)); hud.flash.style.opacity = .22; game.combo = 1; game.drift = 0; t.passed = true; if (rel > 8) popup('CRASH'); }
       }
     }
     // near miss
-    if (!t.passed && lf < -2.5 && Math.abs(lx) < 3.6 && Math.abs(-P.vz) > 25) { t.passed = true; const pts = 150 * game.combo; game.score += pts; popup('NEAR MISS', `+${pts}`); }
+    if (!t.wreck && !t.passed && lf < -2.5 && Math.abs(lx) < 3.6 && Math.abs(-P.vz) > 25) { t.passed = true; const pts = 150 * game.combo; game.score += pts; popup('NEAR MISS', `+${pts}`); }
     if (lf > 6) t.passed = false;
     // visuals
-    const c = t.car; c.root.position.set(t.x, t.y, t.z); c.root.rotation.y = -t.vx * .03;
-    c.body.rotation.x = t.air ? -.08 : Math.atan(t.slope);
+    const c = t.car; c.root.position.set(t.x, t.y, t.z);
     for (const w of c.wheels) w.spin.rotation.x -= t.v * dt / .347;
+    if (t.wreck) { c.root.rotation.set(t.rx, t.ry, t.rz); c.body.rotation.x = 0; c.shadow.visible = up > .85; c.shadow.position.y = .03 - t.y; continue; }
+    c.root.rotation.y = -t.vx * .03;
+    c.body.rotation.x = t.air ? -.08 : Math.atan(t.slope);
     c.shadow.position.y = gnd2.h - t.y + .03;
   }
 }
@@ -838,6 +1004,7 @@ function step(dt) {
   updateTraffic(dt);
   updateChunks(P.z);
   updateSmoke(dt);
+  updateShards(dt);
   // car transforms
   hero.root.position.set(P.x, P.y, P.z); hero.root.rotation.y = P.yaw;
   hero.body.rotation.set(P.pitch, 0, P.roll); hero.body.position.y = P.susp;
@@ -876,7 +1043,8 @@ function frame(now) {
   if (dt > .1) dt = .1;
   if (running) {
     playT += dt;
-    const n = dt > 1 / 50 ? 2 : 1; for (let i = 0; i < n; i++) step(dt / n);
+    const ts = game.slow > 0 ? .35 : 1; if (game.slow > 0) game.slow -= dt;
+    const n = dt > 1 / 50 ? 2 : 1; for (let i = 0; i < n; i++) step(dt * ts / n);
     // adaptive quality: after warmup, drop one level if the frame rate is poor
     // dynamic resolution: keep ~60 fps by trading pixels first, then effects
     if (playT > 1.5) { fpsAcc += dt; fpsN++;
@@ -907,6 +1075,7 @@ updateTraffic(0);
   const rm = new THREE.Mesh(rampGeo, M.ramp); rm.position.z = P.z - 40; scene.add(rm); tmp.push(rm);
   try { renderer.compile(scene, camera); renderer.render(scene, camera); } catch (_) {}
   for (const g of tmp) scene.remove(g); }
+if (location.hash === '#debug') window.__br = { P, traffic };
 requestAnimationFrame(frame);
 $('loading').hidden = true; $('go').hidden = false;
 $('go').onclick = () => {

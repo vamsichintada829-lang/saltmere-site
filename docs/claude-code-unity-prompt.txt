@@ -1,0 +1,177 @@
+You are building a complete mobile game in Unity, end to end, inside this folder. Work autonomously through all milestones below without waiting for me between them. Stop and ask me ONLY for the items listed under "THINGS ONLY THE USER CAN DO", at the moment you actually need them.
+
+=====================================================================
+0. HOW YOU MUST WORK (Claude Code + Unity)
+=====================================================================
+- You cannot click inside the Unity Editor, so everything must be created by code:
+  * C# runtime scripts under Assets/_Game/Scripts.
+  * Editor scripts under Assets/_Game/Editor that GENERATE all scenes, prefabs, materials, procedural textures (saved as PNG assets), input actions, URP settings, project settings and build settings. Expose one entry point: menu "Street Rush/Build Everything" and the static method StreetRush.EditorTools.ProjectBuilder.BuildAll(), so it also runs in batch mode.
+  * Packages are added by editing Packages/manifest.json. Use versions that actually resolve for the installed Unity version: check the Unity docs or package registry instead of guessing, and fix the manifest if resolution fails.
+- First, find the Unity 6 LTS editor installed on this machine (Unity Hub default paths: Windows "C:\Program Files\Unity\Hub\Editor\<version>\Editor\Unity.exe", macOS "/Applications/Unity/Hub/Editor/<version>/Unity.app/Contents/MacOS/Unity", Linux "~/Unity/Hub/Editor/<version>/Editor/Unity"). If the folder is not a Unity project yet, create it in batch mode (-createProject) with the URP 3D setup, or create the project structure and let Unity import it.
+- After every milestone:
+  1. Run Unity in batch mode to import, compile and run BuildAll:
+     <Unity> -batchmode -nographics -quit -projectPath . -executeMethod StreetRush.EditorTools.ProjectBuilder.BuildAll -logFile Logs/batch.log
+  2. Read Logs/batch.log and fix EVERY compile error and exception before moving on. Never leave red errors.
+  3. Run any EditMode tests you wrote (-runTests -testPlatform EditMode).
+  4. Update PROGRESS.md (a checklist of milestones and what is verified) and commit to git with a clear message.
+- At the very start, create CLAUDE.md summarising this whole design (rules, numbers, architecture, folder layout, how to run the batch build) so future sessions keep the same decisions.
+- Write clean, commented C# in namespaces StreetRush.Core / .Car / .Match / .Net / .UI / .CameraRig / .EditorTools. No unfinished TODOs in completed milestones.
+- If a step is truly blocked (missing Android module, no Unity Cloud project), finish everything else that does not depend on it, then tell me exactly what to do and continue after I reply.
+
+=====================================================================
+THINGS ONLY THE USER CAN DO (ask me at the right moment)
+=====================================================================
+1. Install Unity 6 LTS with the "Android Build Support" module (incl. OpenJDK, Android SDK & NDK) through Unity Hub, if you cannot find it.
+2. For online play: sign in to Unity Cloud, link the project (Edit > Project Settings > Services) and enable Authentication, Relay and Lobby / Multiplayer Services in the Unity Cloud dashboard. Ask me for the project to be linked, then continue. Until then, build and test everything else; online code must compile and show "Online play is not set up yet" instead of crashing.
+3. Optional: give you a keystore and passwords for the release build. If I don't, generate one with keytool into a folder that is git-ignored, and tell me where it is and to back it up.
+
+=====================================================================
+1. THE GAME
+=====================================================================
+Title: Street Rush. Studio: Wheel Smart Studio. Package: com.wheelsmart.streetrush.
+Genre: arcade drifting + capture the flag. 1 player (Solo Drift) or 2–4 players online (Team Code).
+Android first: API 24+, target API 34+, IL2CPP, ARM64, landscape only, immersive full screen, screen kept on, internet permission.
+Performance: 60 fps on mid-range Android, 30 fps minimum on low-end.
+
+=====================================================================
+2. RULES (capture the flag)
+=====================================================================
+- Slot colours: 1 orange #FF6A0A, 2 blue #2F7BFF, 3 green #22C55E, 4 magenta #D23BD8. The car, base, base beam, pennant and name tag use the slot colour.
+- A match has 10 rounds and NO time limit.
+- Every round starts with a 10-second countdown. Cars are frozen at their spawns. Beeps at 3, 2, 1, then "GO!".
+- The flag (metal pole + waving gold cloth with a wheel emblem, tall gold light beam) stands on a stand at the map centre.
+- The first car within 3 m of the flag picks it up. The flag attaches to the car's rear roof and the gold beam follows it (hidden on the carrier's own screen).
+- If any other car touches the carrier (centres within ~4.2 m), the flag instantly moves to that car. After any steal there is a 1.2 s cooldown before the next steal.
+- Each player has a base: a 6.5 m radius circle in their colour with a colour beam, a pennant and a floating name tag. When the carrier enters their OWN base, the flag plants there, they score +1, there is a 3.5 s celebration, then the next round starts.
+- Bases MOVE every round: each map has 12 base spots on the outer ring road (3 per side: middle, left, right), each with an inward direction toward the centre. The host picks one spot per player so that chosen spots are at least 150 m apart, and sends the choice to everyone. Cars spawn 14 m inward from their base, facing the centre. The flag resets to the centre.
+- After round 10, the highest score wins: VICTORY / DEFEAT, or DRAW on a tie at the top.
+- Solo Drift: the same rules alone, then show the total time ("10 flags in 3:42").
+- HUD objective text: "GRAB THE FLAG" / "TAKE THE FLAG TO YOUR BASE" / "DASH <name> TO STEAL THE FLAG".
+- Popups: GOT THE FLAG!, FLAG STOLEN!, FLAG LOST (<name> dashed you), <NAME> SCORES, POINT!, GO!.
+- Do NOT add a navigation arrow above the car. The minimap is the only navigation aid.
+
+=====================================================================
+3. MAPS (two scenes, each ~450 m square; boundary = invisible wall + painted line on the ground)
+=====================================================================
+Village Roads:
+- Grass ground everywhere with large-scale colour variation (no visible tiling).
+- A 5x5 network of 12 m wide dirt roads. Jitter interior intersections by about ±10 m so streets bend. Remove ~9 interior streets while keeping the network connected and the outer ring intact. Soft road edges, tyre ruts, pebbles. Round dirt patches at junctions.
+- Centre: a dirt village ground with a South-Indian temple: stone plinth, white shrine with a red band, 5-tier coloured gopuram (cream / ochre / orange), gold kalasam on top, gold flagpole in front, small pillared porch. The flag stand is in front of the temple. The temple is solid.
+- Up to 3 houses per street, facing the road: tiled-roof houses, flat-roof RCC houses (some 2-storey, some with a black water tank on the roof, parapets), round thatched huts. Pastel plastered walls, wooden doors, windows with sunshades, steps, plinth. Solid colliders. Never place houses on base spots, spawns, the temple ground or other roads.
+- Nothing else on the playable area (no trees, poles or props).
+City Streets:
+- Paved concrete ground (large slabs with seams, stains, cracks).
+- A 6x6 grid of 18 m wide tar roads: 2 lanes each way, a yellow double centre line, dashed white lane lines, edge lines, zebra crossings at every junction.
+- A painted centre circle with the flag stand. Roads and ground only.
+Generate both maps procedurally from a fixed random seed in the Editor builder, and save them as scenes with static batching. Store base spots, spawn points and the flag position in a MapDefinition ScriptableObject per map.
+Minimap: round, top-left, rotates with the player. Shows roads, houses, bases in their colours, players as coloured dots, the flag as a gold icon and the local player as an arrow in their colour. Use a top-down orthographic camera to a RenderTexture with a simple unlit layer, or draw it in UI.
+
+=====================================================================
+4. CAR AND DRIVING (custom arcade controller, NOT WheelColliders)
+=====================================================================
+- Rigidbody plus 4 raycast springs/dampers. Wheel meshes follow the ground and spin with speed.
+- Split velocity into forward and lateral parts. Lateral grip per second: 9 normally, 2.4 while sliding (lateral speed > 4.5 m/s), 0.9 with the handbrake. Add back 35% of the lateral speed removed as forward speed (keeps drifts fast).
+- Top speed 80 m/s with falloff near the top. Brake -32 m/s². Reverse capped at -15 m/s. Coasting drag ~2.2 m/s².
+- Steering eases in and is reduced at high speed. Handbrake multiplies yaw rate by 1.7 above 8 m/s. Automatic 6-speed gearbox drives RPM for sound and the HUD gear.
+- Collisions with cars and walls must NOT bounce: zero restitution along the contact normal, 3–6% extra speed damping, separate by half the penetration each. Strong hits only give camera shake, a thump sound and a brief screen flash.
+- Drift (slip > 3.5 m/s at speed > 10 m/s):
+  * body leans outward up to ~8.5°;
+  * front wheels visually counter-steer toward the slide;
+  * light trails in the car colour from both rear wheels (TrailRenderer, additive, ~0.55 s);
+  * tyre smoke on tarmac, dust plus flying grit on dirt and grass;
+  * skid-mark decals;
+  * camera roll ±3°, FOV widens with speed, speed lines above 140 km/h;
+  * a pulsing "DRIFT <points> xCombo" label.
+- Car model: build a curved sporty coupe mesh in code (extruded side profile with bevels, glass canopy, rear wing; no boxy shapes) or leave a clearly marked slot for a licensed car model. Clear-coat paint in the slot colour, dark glass, emissive headlights and tail lights (brighter when braking), 5-spoke rims, brake discs, red calipers, blob shadow.
+- Cameras (Cinemachine): chase (default), far chase, cinematic orbit (CAM button). The camera must never clip into houses or the temple (spherecast and pull in).
+- Input System: touch buttons on screen and keyboard (arrows/WASD, Space = drift/handbrake, C = camera, Esc = pause).
+
+=====================================================================
+5. MULTIPLAYER (Team Code; must work between different cities and mobile networks)
+=====================================================================
+- Use Unity Gaming Services with relay networking, never plain LAN or direct P2P. Prefer the Unity 6 "Multiplayer Services" package (Sessions with a relay network and a join code). If that is not available, use Authentication + Lobby + Relay + Netcode for GameObjects with Unity Transport.
+- On boot: sign in anonymously. The display name comes from the YOUR NAME field (max 12 characters, saved in PlayerPrefs).
+- CREATE TEAM: create a private session/lobby (max 4 players) with a relay. Show its 6-character join code as the TEAM CODE, with COPY (clipboard) and SHARE (Android share intent with the text "Join my Street Rush team! Open the game, tap TEAM CODE and enter: <CODE>").
+- JOIN: enter the code, join the session/lobby and relay. Show clear errors: invalid code, team full, match already started, no internet.
+- Lobby screen: the code with COPY and SHARE; 4 slots (colour chip, name, HOST/READY, or "Waiting for a friend…"); map cards (the host selects, others see the selection live); LEAVE; START (host only, needs 2+ players). Keep the lobby alive with heartbeats and close it when the match starts or the host leaves.
+- Authority:
+  * The host is the referee for the flag holder, scores, round number, countdown start, base spots per round and the winner.
+  * Each client owns its own car movement (client-authoritative, zero input lag). It sends position, yaw, velocity, steer and drift intensity at 15 Hz (unreliable, small payload).
+  * Remote cars are extrapolated up to 0.3 s and smoothed (snap if more than 12 m off). Remote drift intensity drives their smoke and trails on other screens.
+  * Pickup, steal and capture are CLAIMS sent by the client that saw them. The host validates them (phase, current holder, 1.2 s steal cooldown) and broadcasts the results: RoundStart{n, scores, spots[]}, FlagHolder{holder, from}, Capture{slot, scores, round}, MatchEnd{scores}, BackToLobby, PlayerLeft{slot}.
+- Before round 1, wait until every client has loaded the map (or 8 s).
+- If the host leaves: everyone sees "The team host left the game" and returns to the menu.
+- If a client leaves: remove its car and base. If it held the flag, the flag returns to the centre.
+- Add a "local test" mode for development: two Editor instances (or ParrelSync / Multiplayer Play Mode) can join each other so I can test without two phones.
+
+=====================================================================
+6. UI FLOW (uGUI + TextMeshPro)
+=====================================================================
+Fonts: Chakra Petch for headings/numbers and Inter for body text (both SIL Open Font License; download from Google Fonts if you have network access, otherwise use the TMP default and tell me). Accent #FF7A1A, flag gold #FFD23F, dark glass panels rgba(12,16,22,0.46). Safe-area aware layout.
+1. Studio intro (~3.3 s, tap to skip): dark background. A small orange car drives across the screen leaving an orange light line. "WHEEL SMART" (SMART in orange) is revealed behind it. A spinning orange 5-spoke wheel emblem pops in. "S T U D I O" fades up.
+2. Main menu over a slow orbit of the map: "STREET RUSH" (RUSH in orange), subtitle "WHEEL SMART STUDIO · CAPTURE THE FLAG", a YOUR NAME field, and two big buttons: SOLO DRIFT and TEAM CODE.
+3. Solo map select with two illustrated cards: City Streets / Village Roads.
+4. Team screen: CREATE TEAM, or a code field + JOIN, plus a status line for errors.
+5. Lobby screen (see Multiplayer).
+6. HUD:
+   - scoreboard top-left (colour chip, name, flag icon on the carrier, points, ROUND n/10), minimap under it;
+   - speedometer + gear top-centre, objective text under it;
+   - buttons top-right: MENU, CAM, quality LOW/MED/HD, SOUND;
+   - big countdown digits with "ROUND n / 10";
+   - centred popups.
+7. Touch controls: ◀ ▶ bottom-left; GAS (tall), BRAKE and DRIFT bottom-right; multi-touch.
+8. Pause: RESUME / LEAVE MATCH. In online play the match keeps running for others.
+9. Results: VICTORY / DEFEAT / DRAW / COMPLETE, a ranked list, PLAY AGAIN (solo) or BACK TO LOBBY (host), MAIN MENU.
+10. Android Back button: pause during a match, exit from the main menu.
+
+=====================================================================
+7. ART DIRECTION (original or licensed assets only)
+=====================================================================
+- Feel: a bright, sunny, tropical-island mobile battle-royale look. Lush varied grass, warm dirt roads, deep blue sky (#1C7CF0) fading to a pale horizon (#CFEAF8), chunky stylised-realistic props with bevelled edges, saturated but readable on a phone.
+- NEVER use, extract, trace or imitate copyrighted game assets, maps, logos or names (for example Garena Free Fire / Bermuda). Generate textures procedurally in the Editor builder (saved as PNG + materials), and leave clearly named material slots where licensed packs (Unity Asset Store, Synty-style packs, Kenney) can be swapped in later.
+- Textures: tiling PBR-style materials at 4–8 m per tile, plus world-space macro colour variation to hide repetition.
+  * grass with blades, small white/yellow flowers and patches;
+  * dirt with ruts, pebbles and cracks;
+  * concrete slabs with seams, stains and cracks;
+  * pastel plaster with grime toward the ground;
+  * terracotta roof tiles and thatch.
+- Lighting (URP):
+  * one warm directional sun (~3 intensity) with soft shadows, shadow distance ~60 m on mobile;
+  * gradient ambient light, ACES tonemapping, mild bloom on emissives;
+  * colour grading +10 saturation, slightly warm;
+  * fog matching the horizon colour;
+  * a procedural sky with soft clouds.
+- Effects: additive light beams (flag gold, base colours), particle smoke and dust, trail renderers, decal skid marks.
+
+=====================================================================
+8. AUDIO
+=====================================================================
+- Engine loop with pitch/filter from RPM and throttle; tyre screech or dust loop from drift intensity; wind from speed.
+- One-shots: impact thump, pickup chime, steal whoosh, capture fanfare, countdown beeps, victory and defeat stingers.
+- Generate simple procedural placeholder clips in the Editor builder if no audio files exist. Start audio only after the first tap. Mute toggle.
+
+=====================================================================
+9. PERFORMANCE AND BUILD
+=====================================================================
+- Under 150 draw calls and 300k visible triangles. Static batching for roads and ground, GPU instancing for houses, ASTC 6x6 textures, shadow distance 60 m.
+- Quality presets LOW / MED / HD (shadows, MSAA, particle counts, render scale 0.7–1.0). Automatically drop one level if the average fps is below 45 over 3 s, and show "SMOOTH MODE".
+- Android player settings as in section 1; app name "Street Rush"; a generated launcher icon (orange 5-spoke wheel on a dark rounded square).
+- Final step: build a signed release APK in batch mode via BuildPipeline into Builds/StreetRush.apk (and an AAB for the Play Store), and give me the path.
+
+=====================================================================
+10. MILESTONES (do them in order, verify each, commit each)
+=====================================================================
+M1 Car feel: test scene with the car controller, drift effects, cameras, touch + keyboard input and engine/drift audio. Tuning values live in a CarSettings ScriptableObject.
+M2 Maps: the Editor builder generates Village and City scenes, colliders, 12 base spots each, the flag stand, the boundary and the minimap.
+M3 Solo match: the full 10-round loop with countdown, pickup, capture, moving bases, HUD, pause and results.
+M4 Online lobby: sign-in, CREATE TEAM / JOIN with a code through relay, the lobby screen with live map selection, START.
+M5 Online match: car sync, host referee, steal by dash, leave handling, back to lobby, the two-instance local test.
+M6 Polish and ship: studio intro, menu animations, audio mix, quality presets, launcher icon, signed APK/AAB build.
+
+When everything is done, give me:
+(a) what works,
+(b) how to test each part,
+(c) anything that still needs my action (Unity Cloud setup, keystore backup),
+(d) the APK path.
+
+Start now: find Unity, set up the project and CLAUDE.md, then begin M1.

@@ -40,6 +40,7 @@ public class MainActivity extends Activity implements ValueCallback {
         web.setHorizontalScrollBarEnabled(false);
         web.setWebViewClient(new WebViewClient());
         web.setWebChromeClient(new WebChromeClient());
+        web.addJavascriptInterface(new Bridge(this), "AndroidBridge");
         setContentView(web);
         hideSystemBars();
         web.loadUrl("file:///android_asset/index.html");

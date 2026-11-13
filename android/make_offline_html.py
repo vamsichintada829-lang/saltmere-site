@@ -2,13 +2,13 @@
 Usage: python3 make_offline_html.py ../game/index.html out/index.html  (needs npm and curl)"""
 import base64, os, re, subprocess, sys
 src, out = sys.argv[1], sys.argv[2]
-work = os.path.join(os.path.dirname(os.path.abspath(out)), 'bundle'); os.makedirs(work, exist_ok=True)
+work = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'build-cache', 'bundle'); os.makedirs(work, exist_ok=True)
 s = open(src).read()
 i = s.index('<script type="module">') + len('<script type="module">'); j = s.index('</script>', i)
 open(os.path.join(work, 'game.js'), 'w').write(s[i:j].replace("from 'three/addons/utils/BufferGeometryUtils.js'", "from 'three/examples/jsm/utils/BufferGeometryUtils.js'"))
-if not os.path.exists(os.path.join(work, 'node_modules', 'three')):
+if not os.path.exists(os.path.join(work, 'node_modules', 'peerjs')):
     subprocess.run(['npm', 'init', '-y'], cwd=work, check=True, capture_output=True)
-    subprocess.run(['npm', 'install', 'three@0.160.0', 'esbuild@0.21.5'], cwd=work, check=True)
+    subprocess.run(['npm', 'install', 'three@0.160.0', 'peerjs@1.5.4', 'esbuild@0.21.5'], cwd=work, check=True)
 subprocess.run(['npx', 'esbuild', 'game.js', '--bundle', '--minify', '--format=iife', '--target=es2019', '--outfile=game.bundle.js'], cwd=work, check=True)
 js = open(os.path.join(work, 'game.bundle.js')).read().replace('</script', '<\\/script')
 ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36'

@@ -88,14 +88,14 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 // ------------------------------------------------------------------ setup
 const isTouch = matchMedia('(pointer:coarse)').matches;
 const canvas = document.getElementById('c');
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: !isTouch, powerPreference: 'high-performance' });
 let quality = isTouch ? 1 : 2; // 0 low, 1 medium, 2 high
 const maxAniso = Math.min(8, renderer.capabilities.getMaxAnisotropy());
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.05;
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.type = isTouch ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
 
 const scene = new THREE.Scene();
 const HOR = new THREE.Color('#b9cfe4');
@@ -162,7 +162,7 @@ scene.add(sky);
 
 const sun = new THREE.DirectionalLight(0xfff1dc, 2.6);
 sun.castShadow = true;
-sun.shadow.camera.left = -45; sun.shadow.camera.right = 45; sun.shadow.camera.top = 45; sun.shadow.camera.bottom = -45;
+{ const e = isTouch ? 32 : 45; sun.shadow.camera.left = -e; sun.shadow.camera.right = e; sun.shadow.camera.top = e; sun.shadow.camera.bottom = -e; }
 sun.shadow.camera.near = 1; sun.shadow.camera.far = 260;
 sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.04;
 scene.add(sun, sun.target);
@@ -352,7 +352,7 @@ function makeChunk(i) {
 }
 function updateChunks(z) {
   const pc = Math.floor(-z / CH);
-  for (let i = pc - 1; i <= pc + (quality === 0 ? 8 : 10); i++) if (!chunks.has(i)) makeChunk(i);
+  for (let i = pc - 1; i <= pc + (quality === 0 ? 6 : quality === 1 ? 8 : 10); i++) if (!chunks.has(i)) makeChunk(i);
   for (const [i, c] of chunks) if (i < pc - 2 || i > pc + 12) {
     scene.remove(c.grp); for (const r of c.ramps) scene.remove(r.mesh);
     ramps = ramps.filter(r => !c.ramps.includes(r)); chunks.delete(i);
@@ -476,6 +476,7 @@ const CAR = (() => {
     shadow: new THREE.MeshBasicMaterial({ map: shadowTex, transparent: true, depthWrite: false, opacity: .8, polygonOffset: true, polygonOffsetFactor: -4 }),
   };
   common.shadow.map.colorSpace = THREE.NoColorSpace;
+  geo.paintHero = mergeGeometries([geo.body, geo.roof, geo.wing]); geo.paintTraffic = mergeGeometries([geo.body, geo.roof]);
   return { geo, common };
 })();
 
@@ -484,8 +485,8 @@ function makeCar(paint, hero) {
   const tailMat = new THREE.MeshStandardMaterial({ color: 0x550000, emissive: 0xff1a12, emissiveIntensity: 1.2, roughness: .3 });
   const add = (g, m, cast = true) => { const x = new THREE.Mesh(g, m); x.castShadow = cast; body.add(x); return x; };
   const G = CAR.geo, C = CAR.common;
-  add(G.body, paint); add(G.glass, C.glass); add(G.roof, paint); add(G.head, C.head, false); add(G.tail, tailMat, false); add(G.dark, C.trim);
-  if (hero) { add(G.wing, paint); add(G.posts, C.trim); add(G.plate, C.plate, false); add(G.exhaust, C.chrome, false); }
+  add(hero ? G.paintHero : G.paintTraffic, paint); add(G.glass, C.glass); add(G.head, C.head, false); add(G.tail, tailMat, false); add(G.dark, C.trim);
+  if (hero) { add(G.posts, C.trim); add(G.plate, C.plate, false); add(G.exhaust, C.chrome, false); }
   const wheels = [];
   for (const [x, z, front] of [[-.8, -1.25, 1], [.8, -1.25, 1], [-.8, 1.3, 0], [.8, 1.3, 0]]) {
     const pivot = new THREE.Group(); pivot.position.set(x, .347, z); root.add(pivot);
@@ -499,7 +500,8 @@ function makeCar(paint, hero) {
   return { root, body, wheels, tailMat, shadow: sh };
 }
 
-const heroPaint = new THREE.MeshPhysicalMaterial({ color: 0xff6a0a, metalness: .45, roughness: .32, clearcoat: 1, clearcoatRoughness: .05 });
+const heroPaint = isTouch ? new THREE.MeshStandardMaterial({ color: 0xff6a0a, metalness: .55, roughness: .26 })
+  : new THREE.MeshPhysicalMaterial({ color: 0xff6a0a, metalness: .45, roughness: .32, clearcoat: 1, clearcoatRoughness: .05 });
 const hero = makeCar(heroPaint, true);
 scene.add(hero.root);
 
@@ -507,7 +509,7 @@ scene.add(hero.root);
 const TRAFFIC_COLORS = [0xe8e8ea, 0x1c1e22, 0x8f969c, 0x223f7a, 0x7d1414, 0xd9d2c2, 0x2b5a3c, 0x3c3f45];
 const LANES = [-10, -6, -2, 2, 6, 10];
 const traffic = [];
-for (let i = 0; i < 9; i++) {
+for (let i = 0; i < (isTouch ? 7 : 9); i++) {
   const car = makeCar(new THREE.MeshStandardMaterial({ color: TRAFFIC_COLORS[i % TRAFFIC_COLORS.length], metalness: .5, roughness: .35 }), false);
   scene.add(car.root);
   traffic.push({ car, x: 0, y: 0, vy: 0, z: 0, v: 20, vx: 0, lane: 0, passed: false, air: false });
@@ -552,7 +554,7 @@ function updateSmoke(dt) {
     p.age += dt; const t = p.age / p.life;
     smoke.pos[k * 3] += p.vx * dt; smoke.pos[k * 3 + 1] += p.vy * dt; smoke.pos[k * 3 + 2] += p.vz * dt;
     p.vx *= .97; p.vz *= .97;
-    smoke.alpha[k] = (1 - t) * .42 * p.s; smoke.size[k] = 1.2 + t * 5.5;
+    smoke.alpha[k] = (1 - t) * .42 * p.s; smoke.size[k] = 1.2 + t * (quality === 2 ? 5.5 : 3.8);
   }
   smokeGeo.attributes.position.needsUpdate = true; smokeGeo.attributes.aAlpha.needsUpdate = true; smokeGeo.attributes.aSize.needsUpdate = true;
 }
@@ -601,14 +603,19 @@ document.getElementById('qBtn').onclick = () => { setQuality((quality + 1) % 3);
 let muted = false;
 document.getElementById('sndBtn').onclick = () => { muted = !muted; document.getElementById('sndBtn').style.opacity = muted ? .45 : 1; if (audio) audio.master.gain.value = muted ? 0 : .5; };
 
+let prMax = 1, prMin = 1, pr = 1;
 function setQuality(q) {
   quality = q;
   const dpr = Math.min(devicePixelRatio || 1, 2);
-  renderer.setPixelRatio(q === 0 ? Math.min(dpr, 1) : q === 1 ? Math.min(dpr, 1.5) : dpr);
+  prMax = q === 0 ? Math.min(dpr, 1) : q === 1 ? Math.min(dpr, isTouch ? 1.25 : 1.5) : dpr;
+  prMin = Math.max(.6, prMax * .6); pr = prMax;
+  renderer.setPixelRatio(pr);
   sun.castShadow = q > 0;
+  M.water.normalMap = q === 0 ? null : waterNormal; M.water.needsUpdate = true;
+  scene.fog.near = q === 0 ? 160 : 220;
   const ms = q === 2 ? 2048 : 1024;
   if (sun.shadow.mapSize.x !== ms) { sun.shadow.mapSize.set(ms, ms); if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; } }
-  scene.fog.far = q === 0 ? 1100 : 1500;
+  scene.fog.far = q === 0 ? 900 : q === 1 ? 1200 : 1500;
   qBtn.textContent = ['LOW', 'MED', 'HD'][q];
   resize();
 }
@@ -724,7 +731,7 @@ function updatePlayer(dt) {
     const wx = P.x + rx * sx - fx * 1.3, wz = P.z + rz * sx - fz * 1.3;
     if (intensity > 0) {
       addSkid(w, wx, P.y, wz);
-      if (Math.random() < intensity * (quality === 0 ? .45 : .9)) emitSmoke(wx, P.y + .3, wz, P.vx, P.vz, intensity);
+      if (Math.random() < intensity * (quality === 0 ? .3 : quality === 1 ? .5 : .9)) emitSmoke(wx, P.y + .3, wz, P.vx, P.vz, intensity * (quality === 2 ? 1 : 1.3));
     } else skidLast[w] = null;
   }
   // gearbox
@@ -775,13 +782,13 @@ function updateTraffic(dt) {
 }
 
 // ------------------------------------------------------------------ camera
-const camPos = new THREE.Vector3(2, 3, -22), camLook = new THREE.Vector3();
+const camPos = new THREE.Vector3(2, 3, -22), camLook = new THREE.Vector3(), _camT = new THREE.Vector3();
 let baseFov = 60, cineA = 0, camYaw = Math.PI, camDist = 7;
 function updateCamera(dt, speed) {
   const fx = -Math.sin(P.yaw), fz = -Math.cos(P.yaw);
   let dx = fx, dz = fz;
   if (speed > 4) { const vx = P.vx / speed, vz = P.vz / speed; const dot = vx * fx + vz * fz; if (dot > 0) { dx = lerp(fx, vx, .55); dz = lerp(fz, vz, .55); const l = Math.hypot(dx, dz); dx /= l; dz /= l; } }
-  const target = new THREE.Vector3();
+  const target = _camT;
   if (camMode === 2) {
     cineA += dt * .22;
     const a = P.yaw + Math.sin(cineA) * 1.4 + Math.PI * .75;
@@ -808,7 +815,7 @@ function updateCamera(dt, speed) {
   if (speedLines.visible) {
     const len = speed * .05;
     for (let i = 0; i < LINES; i++) { const l = lineData[i]; l.z += speed * dt * 1.6; if (l.z > -2) l.z = -55 - Math.random() * 10;
-      linePos.set([l.x, l.y, l.z, l.x, l.y, l.z - len], i * 6); }
+      const o = i * 6; linePos[o] = linePos[o + 3] = l.x; linePos[o + 1] = linePos[o + 4] = l.y; linePos[o + 2] = l.z; linePos[o + 5] = l.z - len; }
     lineGeo.attributes.position.needsUpdate = true;
   }
 }
@@ -823,8 +830,9 @@ function resize() {
 addEventListener('resize', resize);
 setQuality(quality);
 
-let running = false, last = performance.now(), fpsAcc = 0, fpsN = 0, autoChecked = false, playT = 0;
-let distShown = -1;
+let running = false, last = performance.now(), fpsAcc = 0, fpsN = 0, playT = 0, frameNo = 0;
+let distShown = -1, hudT = 0;
+const setText = (el, v) => { v = String(v); if (el._v !== v) { el._v = v; el.textContent = v; } };
 function step(dt) {
   const r = updatePlayer(dt);
   updateTraffic(dt);
@@ -846,12 +854,12 @@ function step(dt) {
   // score & hud
   game.dist = Math.max(game.dist, (game.startZ - P.z) / 1000);
   if (!P.air && r.speed > 5) game.score += r.speed * dt * .5;
-  hud.spd.textContent = Math.round(Math.abs(r.vF) * 3.6);
-  hud.gear.textContent = r.vF < -0.5 ? 'R' : r.speed < .5 ? 'N' : gear;
-  hud.score.textContent = Math.floor(game.score).toLocaleString('en-US');
+  setText(hud.spd, Math.round(Math.abs(r.vF) * 3.6));
+  setText(hud.gear, r.vF < -0.5 ? 'R' : r.speed < .5 ? 'N' : gear);
+  hudT -= dt; if (hudT <= 0) { hudT = .15; setText(hud.score, Math.floor(game.score).toLocaleString('en-US')); }
   const ds = Math.floor(game.dist * 10); if (ds !== distShown) { distShown = ds; hud.dist.textContent = (ds / 10).toFixed(1) + ' km'; }
   if (msgTimer > 0) { msgTimer -= dt; if (msgTimer <= 0) hud.msg.classList.remove('on'); }
-  if (parseFloat(hud.flash.style.opacity || 0) > 0) hud.flash.style.opacity = Math.max(0, parseFloat(hud.flash.style.opacity) - dt * .8);
+  if (hud.flash.style.opacity !== '' && hud.flash.style.opacity !== '0') { const v = Math.max(0, parseFloat(hud.flash.style.opacity) - dt * .8); hud.flash.style.opacity = v < .01 ? '0' : v.toFixed(2); }
   // audio
   if (audio) {
     const t = audio.ctx.currentTime, f = 42 + rpm * 200;
@@ -870,7 +878,14 @@ function frame(now) {
     playT += dt;
     const n = dt > 1 / 50 ? 2 : 1; for (let i = 0; i < n; i++) step(dt / n);
     // adaptive quality: after warmup, drop one level if the frame rate is poor
-    if (playT > 2 && !autoChecked) { fpsAcc += dt; fpsN++; if (fpsAcc > 3) { autoChecked = true; const fps = fpsN / fpsAcc; if (fps < 42 && quality > 0) { setQuality(quality - 1); popup('PERFORMANCE MODE', 'graphics lowered for smooth play'); } } }
+    // dynamic resolution: keep ~60 fps by trading pixels first, then effects
+    if (playT > 1.5) { fpsAcc += dt; fpsN++;
+      if (fpsAcc > 1.5) { const fps = fpsN / fpsAcc; fpsAcc = 0; fpsN = 0;
+        if (fps < 50) {
+          if (pr > prMin + .01) { pr = Math.max(prMin, pr - (fps < 38 ? .2 : .1)); renderer.setPixelRatio(pr); resize(); }
+          else if (quality > 0 && fps < 42) { setQuality(quality - 1); popup('SMOOTH MODE', 'graphics lowered to remove lag'); }
+        } else if (fps > 58 && pr < prMax - .01) { pr = Math.min(prMax, pr + .05); renderer.setPixelRatio(pr); resize(); }
+      } }
   } else {
     // idle orbit behind the start screen
     playT += dt * .3;
@@ -887,6 +902,11 @@ for (const t of traffic) spawnTraffic(t, P.z - 80);
 hero.root.position.set(P.x, P.y, P.z);
 sun.position.set(P.x + sunDir.x * 120, sunDir.y * 120, P.z + sunDir.z * 120); sun.target.position.set(P.x, 0, P.z);
 updateTraffic(0);
+{ const tmp = [];
+  for (const k of ['truss', 'susp']) { const g = new THREE.Group(); g.position.z = P.z - 40; for (const [geo, m, c, r] of TPL[k]) { const x = new THREE.Mesh(geo, m); x.castShadow = c; x.receiveShadow = r; g.add(x); } scene.add(g); tmp.push(g); }
+  const rm = new THREE.Mesh(rampGeo, M.ramp); rm.position.z = P.z - 40; scene.add(rm); tmp.push(rm);
+  try { renderer.compile(scene, camera); renderer.render(scene, camera); } catch (_) {}
+  for (const g of tmp) scene.remove(g); }
 requestAnimationFrame(frame);
 $('loading').hidden = true; $('go').hidden = false;
 $('go').onclick = () => {

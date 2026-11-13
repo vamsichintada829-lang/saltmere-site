@@ -1762,6 +1762,7 @@ function matchStep(dt) {
   }
 }
 function dropPlayer(slot) {
+  if (!MT.players.some(p => p.slot === slot) && !remotes.has(slot)) return;
   const r = remotes.get(slot); if (r) { scene.remove(r.car.root); remotes.delete(slot); }
   const name = nameOf(slot); MT.players = MT.players.filter(p => p.slot !== slot); LOBBY.players = LOBBY.players.filter(p => p.slot !== slot);
   const b = bases.find(b => b.slot === slot); if (b) { scene.remove(b.g); bases = bases.filter(x => x !== b); }
@@ -1797,15 +1798,67 @@ function tone(f, dur, vol, delay = 0) {
   o.connect(g); g.connect(audio.master); o.start(t0); o.stop(t0 + dur + .02);
 }
 
-// ------------------------------------------------------------------ online: team codes over WebRTC (PeerJS), host relays
+// ------------------------------------------------------------------ online: team codes
+// Main path: an internet relay (MQTT over wss on port 443) that both phones connect out to, so it works across any
+// two networks and cities. Fallback: a direct WebRTC link via PeerJS. The host is the referee in both cases.
+// ------------------------------------------------------------------ relay transport: minimal MQTT 3.1.1 over secure WebSocket (port 443)
+// Works between any two networks: both phones connect out to the relay, which forwards messages on the team's topic.
+const RELAYS = [{ url: 'wss://public.cloud.shiftr.io/', user: 'public', pass: 'public' }];
+class MiniMqtt {
+  constructor(relay, clientId) { this.relay = relay; this.id = clientId; this.ws = null; this.buf = new Uint8Array(0); this.subs = new Map(); this.pid = 1; this.open = false; this.onclose = null; }
+  static enc(s) { return new TextEncoder().encode(s); }
+  static str(s) { const b = MiniMqtt.enc(s); const o = new Uint8Array(b.length + 2); o[0] = b.length >> 8; o[1] = b.length & 255; o.set(b, 2); return o; }
+  static pkt(h, ...parts) {
+    const len = parts.reduce((a, p) => a + p.length, 0), lb = []; let x = len;
+    do { let d = x % 128; x = Math.floor(x / 128); if (x > 0) d |= 128; lb.push(d); } while (x > 0);
+    const o = new Uint8Array(1 + lb.length + len); o[0] = h; o.set(lb, 1); let k = 1 + lb.length; for (const p of parts) { o.set(p, k); k += p.length; } return o;
+  }
+  connect(timeout = 10000) {
+    return new Promise((res, rej) => {
+      let done = false; const fin = (e) => { if (done) return; done = true; clearTimeout(to); e ? rej(e) : res(this); };
+      const to = setTimeout(() => { try { this.ws && this.ws.close(); } catch (_) {} fin({ type: 'network' }); }, timeout);
+      try { this.ws = new WebSocket(this.relay.url, 'mqtt'); } catch (e) { fin({ type: 'network' }); return; }
+      this.ws.binaryType = 'arraybuffer';
+      this.ws.onopen = () => {
+        const flags = (this.relay.user ? 0x80 : 0) | (this.relay.pass ? 0x40 : 0) | 0x02;
+        const vh = new Uint8Array([0, 4, 77, 81, 84, 84, 4, flags, 0, 30]);
+        const parts = [vh, MiniMqtt.str(this.id)]; if (this.relay.user) parts.push(MiniMqtt.str(this.relay.user)); if (this.relay.pass) parts.push(MiniMqtt.str(this.relay.pass));
+        this.ws.send(MiniMqtt.pkt(0x10, ...parts));
+      };
+      this.ws.onmessage = ev => {
+        const n = new Uint8Array(ev.data), b = new Uint8Array(this.buf.length + n.length); b.set(this.buf); b.set(n, this.buf.length); this.buf = b;
+        for (;;) {
+          if (this.buf.length < 2) break;
+          let mul = 1, len = 0, i = 1, d; do { if (i >= this.buf.length) return; d = this.buf[i++]; len += (d & 127) * mul; mul *= 128; } while (d & 128);
+          if (this.buf.length < i + len) break;
+          const type = this.buf[0] >> 4, flags = this.buf[0] & 15, body = this.buf.subarray(i, i + len); this.buf = this.buf.slice(i + len);
+          if (type === 2) { if (body[1] === 0) { this.open = true; this.ping = setInterval(() => this.raw(new Uint8Array([0xc0, 0])), 20000); fin(); } else fin({ type: 'refused' }); }
+          else if (type === 3) {
+            const tl = (body[0] << 8) | body[1], topic = new TextDecoder().decode(body.subarray(2, 2 + tl)); let p = 2 + tl; if ((flags >> 1) & 3) p += 2;
+            const fn = this.subs.get(topic); if (fn) { try { fn(JSON.parse(new TextDecoder().decode(body.subarray(p)))); } catch (_) {} }
+          }
+        }
+      };
+      this.ws.onclose = () => { const was = this.open; this.open = false; clearInterval(this.ping); fin({ type: 'network' }); if (was && this.onclose) this.onclose(); };
+      this.ws.onerror = () => {};
+    });
+  }
+  raw(b) { if (this.ws && this.ws.readyState === 1) this.ws.send(b); }
+  subscribe(topic, fn) { this.subs.set(topic, fn); const id = this.pid++ & 65535 || 1; this.raw(MiniMqtt.pkt(0x82, new Uint8Array([id >> 8, id & 255]), MiniMqtt.str(topic), new Uint8Array([0]))); }
+  publish(topic, obj) { this.raw(MiniMqtt.pkt(0x30, MiniMqtt.str(topic), MiniMqtt.enc(JSON.stringify(obj)))); }
+  close() { this.open = false; clearInterval(this.ping); try { this.raw(new Uint8Array([0xe0, 0])); this.ws && this.ws.close(); } catch (_) {} }
+}
+
 const PEER_PREFIX = 'wheelsmart-streetrush-v1-', CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const ICE = { iceServers: [
   { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302', 'stun:global.stun.twilio.com:3478'] },
   { urls: ['turn:openrelay.metered.ca:80', 'turn:openrelay.metered.ca:443', 'turn:openrelay.metered.ca:443?transport=tcp'], username: 'openrelayproject', credential: 'openrelayproject' },
 ] };
+const TOPIC = code => `wheelsmart/streetrush/v1/${code}`;
 const myId = Math.random().toString(36).slice(2, 10);
-const NET = { peer: null, conns: [], hostConn: null, isHost: false, code: '', online: false };
+const NET = { mode: null, mq: null, peer: null, base: '', conns: [], hostConn: null, isHost: false, code: '', online: false, lastHost: 0 };
 const LOBBY = { players: [], map: 'city', mySlot: 0 };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 let PeerCls = null;
 async function getPeer() {
   if (typeof RTCPeerConnection === 'undefined') throw Object.assign(new Error('webrtc'), { type: 'browser-incompatible' });
@@ -1813,39 +1866,83 @@ async function getPeer() {
   return PeerCls;
 }
 function genCode() { let s = ''; const a = new Uint32Array(6); crypto.getRandomValues(a); for (const v of a) s += CODE_CHARS[v % CODE_CHARS.length]; return s; }
-function netReset() { try { NET.peer && NET.peer.destroy(); } catch (_) {} Object.assign(NET, { peer: null, conns: [], hostConn: null, isHost: false, code: '', online: false }); }
+function netReset() {
+  try { NET.mq && NET.mq.close(); } catch (_) {} try { NET.peer && NET.peer.destroy(); } catch (_) {}
+  Object.assign(NET, { mode: null, mq: null, peer: null, base: '', conns: [], hostConn: null, isHost: false, code: '', online: false, lastHost: 0 });
+}
 function netError(e) {
   const t = e && e.type;
   return t === 'browser-incompatible' ? 'Online play is not available here. Use the Android app to play with friends.'
-    : t === 'peer-unavailable' ? 'No team found with that code.' : t === 'network' || t === 'server-error' || t === 'socket-error' ? 'Cannot reach the game server. Check your internet.'
+    : t === 'peer-unavailable' || t === 'not-found' ? 'No team found with that code. Check the code and that your friend is still in the lobby.'
+    : t === 'network' || t === 'server-error' || t === 'socket-error' ? 'Cannot reach the game server. Check your internet and try again.'
     : 'Connection problem' + (t ? ` (${t})` : '') + '. Try again.';
 }
-function send(m) { if (!MT.online && !NET.online) return; if (NET.isHost) bcast(m); else if (NET.hostConn && NET.hostConn.open) NET.hostConn.send(m); }
-function bcast(m, except) { for (const c of NET.conns) if (c !== except && c.open) c.send(m); }
+function send(m) {
+  if (!NET.online) return;
+  if (NET.mode === 'relay') {
+    if (!NET.mq) return;
+    if (m.t === 'st') NET.mq.publish(NET.base + '/s', m);
+    else if (NET.isHost) NET.mq.publish(NET.base + '/g', m);
+    else NET.mq.publish(NET.base + '/h', { ...m, from: myId });
+    return;
+  }
+  if (NET.isHost) bcast(m); else if (NET.hostConn && NET.hostConn.open) NET.hostConn.send(m);
+}
+function bcast(m, except) {
+  if (NET.mode === 'relay') { if (NET.mq) NET.mq.publish(NET.base + (m.t === 'st' ? '/s' : '/g'), m); return; }
+  for (const c of NET.conns) if (c !== except && c.open) c.send(m);
+}
 function claim(type) { if (!MT.online || NET.isHost) hostClaim(type, MT.mySlot); else send({ t: type }); }
 function sendLobby() { bcast({ t: 'lobby', players: LOBBY.players, map: LOBBY.map, code: NET.code }); }
+async function connectRelay() { const mq = new MiniMqtt(RELAYS[0], 'sr-' + myId + '-' + genCode().toLowerCase()); await mq.connect(9000); return mq; }
+async function relayDropped() {
+  for (let k = 0; k < 4 && NET.mode === 'relay'; k++) {
+    await sleep(1500);
+    try { const old = NET.mq, mq = await connectRelay(); if (NET.mode !== 'relay') { mq.close(); return; } for (const [t, fn] of old.subs) mq.subscribe(t, fn); mq.onclose = relayDropped; NET.mq = mq; return; } catch (_) {}
+  }
+  if (NET.mode !== 'relay') return;
+  if (NET.isHost) { const wasMatch = MT.active; netReset(); if (wasMatch) endMatch(); running = false; $('result').hidden = true; $('pause').hidden = true; openMainMenu(); status('homeStatus', 'Lost the connection to the game server.', true); }
+  else hostLost();
+}
 async function createTeam() {
   status('teamStatus', 'Creating team…'); $('bCreate').disabled = true;
   try {
-    const Peer = await getPeer(); let r = null;
-    for (let k = 0; k < 3 && !r; k++) {
-      const code = genCode();
-      r = await new Promise((res, rej) => {
-        const p = new Peer(PEER_PREFIX + code, { config: ICE, debug: 0 });
-        const to = setTimeout(() => { p.destroy(); rej({ type: 'network' }); }, 15000);
-        p.on('open', () => { clearTimeout(to); res({ p, code }); });
-        p.on('error', e => { clearTimeout(to); p.destroy(); e.type === 'unavailable-id' ? res(null) : rej(e); });
-      });
+    netReset();
+    const code = genCode(); let mq = null;
+    try { mq = await connectRelay(); } catch (_) {}
+    if (mq) {
+      Object.assign(NET, { mode: 'relay', mq, base: TOPIC(code), code, isHost: true, online: true, conns: [] });
+      mq.subscribe(NET.base + '/h', onRelayHost);
+      mq.subscribe(NET.base + '/s', m => { if (!m || typeof m !== 'object') return; onState(m); const c = NET.conns.find(c => c.slot === m.s); if (c) c.seen = nowS(); });
+      mq.onclose = relayDropped;
+    } else {
+      const Peer = await getPeer(); let r = null;
+      for (let k = 0; k < 3 && !r; k++) {
+        const pc = k ? genCode() : code;
+        r = await new Promise((res, rej) => {
+          const p = new Peer(PEER_PREFIX + pc, { config: ICE, debug: 0 });
+          const to = setTimeout(() => { p.destroy(); rej({ type: 'network' }); }, 15000);
+          p.on('open', () => { clearTimeout(to); res({ p, code: pc }); });
+          p.on('error', e => { clearTimeout(to); p.destroy(); e.type === 'unavailable-id' ? res(null) : rej(e); });
+        });
+      }
+      if (!r) throw { type: 'unavailable-id' };
+      Object.assign(NET, { mode: 'p2p', peer: r.p, code: r.code, isHost: true, online: true, conns: [] });
+      r.p.on('connection', onGuestConn);
+      r.p.on('disconnected', () => { try { r.p.reconnect(); } catch (_) {} });
+      r.p.on('error', e => { if (e.type !== 'peer-unavailable') console.warn('peer', e.type); });
     }
-    if (!r) throw { type: 'unavailable-id' };
-    Object.assign(NET, { peer: r.p, code: r.code, isHost: true, online: true, conns: [] });
-    LOBBY.players = [{ id: myId, name: myName(), slot: 0 }]; LOBBY.mySlot = 0;
-    r.p.on('connection', onGuestConn);
-    r.p.on('disconnected', () => { try { r.p.reconnect(); } catch (_) {} });
-    r.p.on('error', e => { if (e.type === 'peer-unavailable') return; console.warn('peer', e.type); });
+    LOBBY.players = [{ id: myId, name: myName(), slot: 0 }]; LOBBY.mySlot = 0; LOBBY.map = LOBBY.map || 'city';
     status('teamStatus', ''); showView('vLobby'); renderLobby();
   } catch (e) { status('teamStatus', netError(e), true); netReset(); }
   $('bCreate').disabled = false;
+}
+function onRelayHost(m) {
+  if (!m || typeof m !== 'object' || typeof m.from !== 'string') return;
+  let c = NET.conns.find(c => c.pid === m.from);
+  if (!c) { if (m.t !== 'hello') return; const pid = m.from.slice(0, 12); c = { pid, open: true, relay: true, seen: nowS(), send: x => NET.mq && NET.mq.publish(NET.base + '/p/' + pid, x), close() {} }; }
+  c.seen = nowS();
+  onHostData(c, m);
 }
 function onGuestConn(conn) {
   conn.on('data', m => onHostData(conn, m));
@@ -1855,10 +1952,11 @@ function onGuestConn(conn) {
 function onHostData(conn, m) {
   if (!m || typeof m !== 'object') return;
   if (m.t === 'hello') {
+    if (conn.slot !== undefined) { sendLobby(); return; }
     if (LOBBY.players.length >= 4 || MT.active) { conn.send({ t: 'full' }); setTimeout(() => conn.close(), 400); return; }
     const used = LOBBY.players.map(p => p.slot); let slot = 0; while (used.includes(slot)) slot++;
-    conn.slot = slot; conn.pid = String(m.id).slice(0, 12); NET.conns.push(conn);
-    LOBBY.players.push({ id: conn.pid, name: cleanName(m.name), slot }); sendLobby(); renderLobby(); tone(880, .15, .2); return;
+    conn.slot = slot; conn.pid = conn.pid || String(m.id).slice(0, 12); NET.conns.push(conn);
+    LOBBY.players.push({ id: String(m.id).slice(0, 12), name: cleanName(m.name), slot }); sendLobby(); renderLobby(); tone(880, .15, .2); return;
   }
   if (conn.slot === undefined) return;
   if (m.t === 'st') { m.s = conn.slot; bcast(m, conn); onState(m); const r = remotes.get(conn.slot); if (r) r.seen = nowS(); }
@@ -1876,26 +1974,42 @@ async function joinTeam() {
   const code = $('jcode').value.toUpperCase().replace(/[^A-Z0-9]/g, '');
   if (code.length !== 6) { status('teamStatus', 'Enter the 6-character team code.', true); return; }
   status('teamStatus', `Joining ${code}…`); $('bJoin').disabled = true;
+  netReset();
+  // 1) relay
+  let mq = null; try { mq = await connectRelay(); } catch (_) {}
+  if (mq) {
+    const base = TOPIC(code);
+    Object.assign(NET, { mode: 'relay', mq, base, code, isHost: false, online: false });
+    const onMsg = m => { if (!m || typeof m !== 'object' || NET.mq !== mq && NET.mode !== 'relay') return; NET.lastHost = nowS(); if (!NET.online && m.t === 'lobby') NET.online = true; if (NET.online || m.t === 'full') onGuestData(m); };
+    mq.subscribe(base + '/g', onMsg); mq.subscribe(base + '/p/' + myId, onMsg);
+    mq.subscribe(base + '/s', m => { if (!m || typeof m !== 'object' || !NET.online) return; if (m.s === 0) NET.lastHost = nowS(); onGuestData(m); });
+    mq.onclose = relayDropped;
+    for (let k = 0; k < 8 && !NET.online && NET.mq === mq; k++) { mq.publish(base + '/h', { t: 'hello', id: myId, name: myName(), from: myId }); await sleep(1000); }
+    if (NET.online || NET.mq !== mq) { $('bJoin').disabled = false; return; }
+    status('teamStatus', `Joining ${code}… trying a direct link`);
+    netReset();
+  }
+  // 2) direct WebRTC
   try {
-    const Peer = await getPeer(); netReset();
+    const Peer = await getPeer();
     const p = new Peer(PEER_PREFIX + 'g-' + myId + genCode().toLowerCase(), { config: ICE, debug: 0 }); NET.peer = p;
     let done = false;
     const fail = e => { if (done) return; done = true; status('teamStatus', netError(e), true); netReset(); $('bJoin').disabled = false; };
     p.on('error', fail);
-    const to = setTimeout(() => fail({ type: 'network' }), 20000);
+    const to = setTimeout(() => fail({ type: mq ? 'not-found' : 'network' }), 20000);
     p.on('open', () => {
       const conn = p.connect(PEER_PREFIX + code, { reliable: true, serialization: 'json' });
-      conn.on('open', () => { done = true; clearTimeout(to); Object.assign(NET, { hostConn: conn, online: true, code, isHost: false }); conn.send({ t: 'hello', id: myId, name: myName() }); $('bJoin').disabled = false; });
+      conn.on('open', () => { done = true; clearTimeout(to); Object.assign(NET, { mode: 'p2p', hostConn: conn, online: true, code, isHost: false }); conn.send({ t: 'hello', id: myId, name: myName() }); $('bJoin').disabled = false; });
       conn.on('data', onGuestData);
       conn.on('close', hostLost); conn.on('error', hostLost);
     });
-  } catch (e) { status('teamStatus', netError(e), true); $('bJoin').disabled = false; }
+  } catch (e) { status('teamStatus', mq ? netError({ type: 'not-found' }) : netError(e), true); netReset(); $('bJoin').disabled = false; }
 }
 function onGuestData(m) {
   if (!m || typeof m !== 'object') return;
   switch (m.t) {
-    case 'full': status('teamStatus', 'That team is full or already playing.', true); netReset(); break;
-    case 'lobby': { LOBBY.players = m.players; LOBBY.map = m.map; const me = m.players.find(p => p.id === myId); if (me) LOBBY.mySlot = me.slot; if (!MT.active) { status('teamStatus', ''); showView('vLobby'); renderLobby(); } break; }
+    case 'full': status('teamStatus', 'That team is full or already playing.', true); netReset(); $('bJoin').disabled = false; break;
+    case 'lobby': { LOBBY.players = m.players; LOBBY.map = m.map; const me = m.players.find(p => p.id === myId); if (me) LOBBY.mySlot = me.slot; if (!MT.active && $('result').hidden) { status('teamStatus', ''); showView('vLobby'); renderLobby(); } break; }
     case 'start': $('result').hidden = true; startMatch(m.map, m.players, true); send({ t: 'ready' }); break;
     case 'round': beginRound(m.n, m.scores); break;
     case 'flag': applyFlag(m); break;
@@ -1912,6 +2026,12 @@ function hostLost() {
   netReset(); if (MT.active) endMatch(); running = false;
   $('result').hidden = true; $('pause').hidden = true; openMainMenu(); status('homeStatus', 'The team host left the game.', true);
 }
+setInterval(() => { // relay keep-alive: who is still here
+  if (!NET.online || NET.mode !== 'relay') return;
+  const t = nowS();
+  if (NET.isHost) { for (const c of NET.conns.slice()) if (t - c.seen > 14) guestLeft(c); if (!MT.active) sendLobby(); else bcast({ t: 'hb' }); }
+  else { send({ t: 'hb' }); if (NET.lastHost && t - NET.lastHost > 16) hostLost(); }
+}, 3000);
 function hostStart() {
   if (LOBBY.players.length < 2) return;
   for (const c of NET.conns) c.ready = false;
@@ -1921,7 +2041,7 @@ function hostStart() {
   (function wait() { if (!MT.active) return; if (NET.conns.every(c => c.ready) || performance.now() - t0 > 8000) hostRound(1); else setTimeout(wait, 200); })();
 }
 function leaveTeam() {
-  if (NET.isHost) { bcast({ t: 'closing' }); } else if (NET.hostConn && NET.hostConn.open) NET.hostConn.send({ t: 'bye' });
+  if (NET.isHost) bcast({ t: 'closing' }); else send({ t: 'bye' });
   setTimeout(netReset, 300); NET.online = false;
 }
 
